@@ -1,0 +1,17 @@
+# Ignore sensitive files
+config.php
+.env
+
+# Ignore system files
+.DS_Store
+
+# Ignore vendor or cache if you add composer
+/vendor/
+/node_modules/
+/cache/
+config.php
+.env
+.DS_Store
+/vendor/
+/node_modules/
+/cache/
