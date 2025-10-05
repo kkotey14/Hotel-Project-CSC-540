@@ -108,7 +108,10 @@ if (!$forceEmpty) {
               <?php if (!empty($_SESSION['user']) && in_array($_SESSION['user']['role'], ['admin','staff'])): ?>
                 <a class="btn" href="room_edit.php?id=<?= $r['id'] ?>">Edit</a>
               <?php endif; ?>
-              <a class="btn primary" href="room.php?id=<?= $r['id'] ?>#book&<?= $guests ? 'guests='.$guests.'&' : '' ?>ci=<?= urlencode($ci) ?>&co=<?= urlencode($co) ?>">Book</a>
+              <a class="btn primary"
+   href="checkout.php?room_id=<?= (int)$r['id'] ?>&ci=<?= urlencode($ci ?? '') ?>&co=<?= urlencode($co ?? '') ?>&guests=<?= (int)max(1, $guests ?? 1) ?>">
+  Proceed to Checkout
+</a>
             </div>
           </div>
         </article>

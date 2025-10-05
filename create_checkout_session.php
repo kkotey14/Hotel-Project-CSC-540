@@ -1,46 +1,99 @@
 <?php
-require 'db.php';
-require_once 'config.php';
 
-header('Content-Type: application/json');
+// DEBUG (remove after fixing)
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
 
-$booking_id = (int)($_GET['booking_id'] ?? 0);
-if (!$booking_id) { echo json_encode(['error'=>'missing booking']); exit; }
+// create_checkout_session.php — verifies availability and creates Stripe Checkout Session
+require_once __DIR__ . '/config.php';   // <- ensure STRIPE_* and BASE_URL are defined
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/auth.php';
+require_login();
 
-$stmt = $pdo->prepare("SELECT b.id, r.type, r.number,
-  (SELECT amount_cents FROM payments WHERE booking_id=b.id ORDER BY id DESC LIMIT 1) AS amount_cents
-  FROM bookings b JOIN rooms r ON b.room_id=r.id
-  WHERE b.id=?");
-$stmt->execute([$booking_id]);
-$row = $stmt->fetch(PDO::FETCH_ASSOC);
-if (!$row) { echo json_encode(['error'=>'not found']); exit; }
+// Stripe SDK
+$autoload = __DIR__ . '/vendor/autoload.php';
+if (!file_exists($autoload)) {
+  die('<pre>Stripe SDK not found. Run: composer install</pre>');
+}
+require_once $autoload;
 
-$base = (isset($_SERVER['HTTPS'])?'https':'http') . "://".$_SERVER['HTTP_HOST'].rtrim(dirname($_SERVER['REQUEST_URI']),'/');
-$success_url = $base."/success.php?booking_id=".$booking_id;
-$cancel_url  = $base."/cancel.php?booking_id=".$booking_id;
+if (!defined('STRIPE_SECRET') || !STRIPE_SECRET) {
+  die('<pre>STRIPE_SECRET is missing. Put test keys in config.php (local only).</pre>');
+}
 
-$payload = [
-  'mode' => 'payment',
-  'success_url' => $success_url,
-  'cancel_url'  => $cancel_url,
-  'payment_method_types[]' => 'card',
-  'line_items[0][price_data][currency]' => 'usd',
-  'line_items[0][price_data][product_data][name]' => $row['type']." — Room ".$row['number'],
-  'line_items[0][price_data][unit_amount]' => (int)$row['amount_cents'],
-  'line_items[0][quantity]' => 1,
-  'metadata[booking_id]' => (string)$booking_id
-];
+\Stripe\Stripe::setApiKey(STRIPE_SECRET);
 
-$ch = curl_init("https://api.stripe.com/v1/checkout/sessions");
-curl_setopt_array($ch, [
-  CURLOPT_HTTPHEADER => ["Authorization: Bearer ".STRIPE_SECRET],
-  CURLOPT_POST => true,
-  CURLOPT_POSTFIELDS => http_build_query($payload),
-  CURLOPT_RETURNTRANSFER => true,
-]);
-$out = curl_exec($ch);
-$code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-curl_close($ch);
+// Inputs
+$room_id = (int)($_POST['room_id'] ?? 0);
+$ci      = $_POST['ci'] ?? '';
+$co      = $_POST['co'] ?? '';
+$guests  = max(1, (int)($_POST['guests'] ?? 1));
 
-http_response_code($code);
-echo $out;
+// Validate room
+$stmt = $pdo->prepare("SELECT * FROM rooms WHERE id=? AND is_active=1");
+$stmt->execute([$room_id]);
+$room = $stmt->fetch(PDO::FETCH_ASSOC);
+if (!$room) { header("Location: rooms_list.php"); exit; }
+
+// Validate dates
+if (!$ci || !$co || $ci >= $co) { header("Location: room.php?id=".$room_id); exit; }
+
+// Validate guests vs max
+if ($guests > (int)$room['max_guests']) { header("Location: room.php?id=".$room_id."&err=max_guests"); exit; }
+
+// Check availability again
+$q = $pdo->prepare("SELECT COUNT(*) FROM bookings
+  WHERE room_id=? AND status IN ('pending','confirmed')
+    AND ( (check_in < ? AND check_out > ?) OR (check_in >= ? AND check_in < ?) )");
+$q->execute([$room_id, $co, $ci, $ci, $co]);
+$conflict = $q->fetchColumn() > 0;
+if ($conflict) { header("Location: room.php?id=".$room_id."&err=conflict"); exit; }
+
+// Compute nights & amount
+$nightStmt = $pdo->prepare("SELECT DATEDIFF(?, ?) AS nights");
+$nightStmt->execute([$co, $ci]);
+$diff = (int)$nightStmt->fetchColumn();
+$nights = max(1, $diff);
+$amount_cents = $nights * (int)$room['rate_cents'];
+
+// Safe BASE_URL fallback if not defined
+$base = (defined('BASE_URL') && BASE_URL) ? BASE_URL : '/hotelapp';
+
+try {
+  $session = \Stripe\Checkout\Session::create([
+    'mode' => 'payment',
+    'payment_method_types' => ['card'],
+    'line_items' => [[
+      'quantity' => 1,
+      'price_data' => [
+        'currency' => 'usd',
+        'unit_amount' => $amount_cents,
+        'product_data' => [
+          'name' => "Room {$room['number']} – {$room['type']} ({$nights} night".($nights>1?'s':'').")",
+          'description' => "Check-in: {$ci} | Check-out: {$co} | Guests: {$guests}",
+        ],
+      ],
+    ]],
+    'success_url' => 'http://localhost/hotelapp/success.php?session_id={CHECKOUT_SESSION_ID}',
+'cancel_url'  => 'http://localhost/hotelapp/cancel.php',
+    'metadata' => [
+      'user_id'    => $_SESSION['user']['id'],
+      'room_id'    => $room_id,
+      'check_in'   => $ci,
+      'check_out'  => $co,
+      'guests'     => $guests,
+      'nights'     => $nights,
+      'rate_cents' => (int)$room['rate_cents'],
+    ]
+  ]);
+
+  header("Location: " . $session->url);
+  exit;
+
+} catch (Exception $e) {
+  // Show the error message while debugging; log it in prod
+  echo "<pre>Stripe error: " . htmlspecialchars($e->getMessage()) . "</pre>";
+  error_log("Stripe create session error: ".$e->getMessage());
+  exit;
+}

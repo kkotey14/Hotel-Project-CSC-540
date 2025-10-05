@@ -183,3 +183,14 @@ section{padding:48px 0}
 .flatpickr-day.inRange, .flatpickr-day.startRange, .flatpickr-day.endRange{
   box-shadow:inset 0 0 0 1px rgba(138,163,95,.7);
 }
+
+.menu-item {
+  display: block;
+  padding: 10px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: #111;
+}
+.menu-item:hover {
+  background: #f5f7f9;
+}

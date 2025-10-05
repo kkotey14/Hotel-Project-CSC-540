@@ -4,7 +4,6 @@
   <div class="container footer-grid">
     <div>
       <div class="brand brand--footer">
-        <span class="brand-mark">the</span>
         <span class="brand-name"><?= htmlspecialchars(HOTEL_NAME) ?></span>
       </div>
       <p class="muted">353 Main Ave, Norwalk, CT · reservations@example.com · (203) 555-0123</p>
