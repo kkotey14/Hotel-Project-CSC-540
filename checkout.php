@@ -1,74 +1,133 @@
 <?php
-// checkout.php — shows order summary and sends user to Stripe Checkout
-require 'db.php';
-require 'auth.php';
-require_login();
-require 'header.php';
+// checkout.php — inventory-aware pre-confirmation page
+require_once __DIR__.'/config.php';
+require_once __DIR__.'/db.php';
+require_once __DIR__.'/auth.php';
+require_once __DIR__.'/header.php';
 
-// Inputs
+// ---- read & validate inputs ----
 $room_id = (int)($_GET['room_id'] ?? 0);
-$ci      = $_GET['ci'] ?? '';
-$co      = $_GET['co'] ?? '';
+$ci      = trim($_GET['ci'] ?? '');
+$co      = trim($_GET['co'] ?? '');
 $guests  = max(1, (int)($_GET['guests'] ?? 1));
 
-// Validate room
-$stmt = $pdo->prepare("SELECT * FROM rooms WHERE id=? AND is_active=1");
-$stmt->execute([$room_id]);
-$room = $stmt->fetch(PDO::FETCH_ASSOC);
+function valid_ymd($s){
+  $dt = DateTime::createFromFormat('Y-m-d', $s);
+  return $dt && $dt->format('Y-m-d') === $s;
+}
+
+if ($room_id <= 0 || !valid_ymd($ci) || !valid_ymd($co) || $ci >= $co) {
+  echo "<section class='container'><div class='card' style='padding:22px;max-width:700px;margin:0 auto'>
+          <h2>Invalid selection</h2>
+          <p>Please select valid check-in and check-out dates.</p>
+          <a class='btn' href='rooms_list.php'>Back to rooms</a>
+        </div></section>";
+  require 'footer.php'; exit;
+}
+
+// ---- load room (this represents a room *type* with inventory) ----
+$st = $pdo->prepare("SELECT * FROM rooms WHERE id=? AND is_active=1 LIMIT 1");
+$st->execute([$room_id]);
+$room = $st->fetch(PDO::FETCH_ASSOC);
 if (!$room) {
-  echo "<section class='container'><div class='card'>Room not found or inactive.</div></section>";
+  echo "<section class='container'><div class='card' style='padding:22px;max-width:700px;margin:0 auto'>
+          <h2>Room not found</h2>
+          <a class='btn' href='rooms_list.php'>Back to rooms</a>
+        </div></section>";
   require 'footer.php'; exit;
 }
 
-// Validate dates
-if (!$ci || !$co || $ci >= $co) {
-  echo "<section class='container'><div class='card'>Invalid dates. Please go back and choose a valid range.</div></section>";
-  require 'footer.php'; exit;
-}
-
-// Validate guests vs max
+// guest cap
 if ($guests > (int)$room['max_guests']) {
-  echo "<section class='container'><div class='card'>Guest count exceeds room limit (max {$room['max_guests']}).</div></section>";
+  echo "<section class='container'><div class='card' style='padding:22px;max-width:700px;margin:0 auto'>
+          <h2>Too many guests</h2>
+          <p>This room allows up to ".(int)$room['max_guests']." guest(s).</p>
+          <a class='btn' href='rooms_list.php'>Back to rooms</a>
+        </div></section>";
   require 'footer.php'; exit;
 }
 
-// Compute nights & total
-$nightStmt = $pdo->prepare("SELECT DATEDIFF(?, ?) AS nights");
-$nightStmt->execute([$co, $ci]);
-$diff = (int)$nightStmt->fetchColumn();
-$nights = max(1, $diff);
-$amount_cents = $nights * (int)$room['rate_cents'];
+// ---- inventory-aware availability (sold out only if all units taken) ----
+$inventory = isset($room['inventory']) ? max(1, (int)$room['inventory']) : 1;
+
+$overlap = $pdo->prepare("
+  SELECT COUNT(*) FROM bookings
+   WHERE room_id = ?
+     AND status IN ('pending','confirmed')
+     AND NOT (check_out <= ? OR check_in >= ?)
+");
+$overlap->execute([$room_id, $ci, $co]);
+$used = (int)$overlap->fetchColumn();
+
+if ($used >= $inventory) {
+  echo "<section class='container'><div class='card' style='padding:22px;max-width:760px;margin:0 auto'>
+          <h2>Invalid selection</h2>
+          <p>Selected dates are no longer available for this room.</p>
+          <a class='btn' href='rooms_list.php?ci=".urlencode($ci)."&co=".urlencode($co)."&guests=".(int)$guests."'>Back to rooms</a>
+        </div></section>";
+  require 'footer.php'; exit;
+}
+
+// ---- price estimate ----
+$nights = (new DateTime($ci))->diff(new DateTime($co))->days;
+$nights = max(1, $nights);
+$total_cents = $nights * (int)$room['rate_cents'];
 ?>
 <section class="container">
-  <div class="card" style="padding:24px;max-width:760px;margin:0 auto;">
-    <h1 class="h2" style="margin:0 0 10px">Checkout</h1>
-    <p class="muted" style="margin-top:0">Your booking will be created only after payment is completed.</p>
-
+  <div class="card" style="max-width:900px;margin:0 auto;padding:18px 18px 24px">
     <div class="grid">
-      <div class="span-7">
-        <div class="hero-img-wrap">
-          <img src="<?= htmlspecialchars($room['image_url'] ?: 'https://via.placeholder.com/1200x800?text=Room') ?>" alt="Room">
+      <div class="span-4">
+        <div class="hero-img-wrap" style="border-radius:12px;overflow:hidden">
+          <img src="<?= htmlspecialchars($room['image_url'] ?: 'https://via.placeholder.com/800x600?text=Room') ?>"
+               alt="Room image" style="width:100%;height:180px;object-fit:cover">
+        </div>
+        <div class="muted tiny" style="margin-top:6px">
+          You won’t be charged now. You’ll pay at the property.
         </div>
       </div>
-      <div class="span-5">
-        <div class="card" style="padding:16px">
-          <div class="h3" style="margin:0 0 6px"><?= htmlspecialchars($room['type']) ?> · Room <?= htmlspecialchars($room['number']) ?></div>
-          <div class="muted">Guests: <?= (int)$guests ?> · Max <?= (int)$room['max_guests'] ?></div>
-          <div class="muted">Check-in: <?= htmlspecialchars($ci) ?> · Check-out: <?= htmlspecialchars($co) ?> (<?= $nights ?> night<?= $nights>1?'s':'' ?>)</div>
-          <hr>
-          <div class="h3" style="margin:0">$<?= number_format($amount_cents/100, 2) ?> <small class="muted">total</small></div>
-        </div>
 
-        <form method="post" action="create_checkout_session.php" style="margin-top:12px">
-          <input type="hidden" name="room_id" value="<?= $room_id ?>">
+      <div class="span-8">
+        <h2 class="h2" style="margin:0 0 10px">Review your stay</h2>
+        <table class="table" style="width:100%;border-collapse:collapse">
+          <tr>
+            <td style="width:40%;border:1px solid var(--line);padding:10px">Room Type</td>
+            <td style="border:1px solid var(--line);padding:10px"><?= htmlspecialchars($room['type']) ?></td>
+          </tr>
+          <tr>
+            <td style="border:1px solid var(--line);padding:10px">Guests</td>
+            <td style="border:1px solid var(--line);padding:10px"><?= (int)$guests ?> (max <?= (int)$room['max_guests'] ?>)</td>
+          </tr>
+          <tr>
+            <td style="border:1px solid var(--line);padding:10px">Check-in</td>
+            <td style="border:1px solid var(--line);padding:10px"><?= htmlspecialchars($ci) ?></td>
+          </tr>
+          <tr>
+            <td style="border:1px solid var(--line);padding:10px">Check-out</td>
+            <td style="border:1px solid var(--line);padding:10px"><?= htmlspecialchars($co) ?></td>
+          </tr>
+          <tr>
+            <td style="border:1px solid var(--line);padding:10px">Estimate</td>
+            <td style="border:1px solid var(--line);padding:10px">
+              $<?= number_format($total_cents/100, 2) ?> for <?= $nights ?> night<?= $nights>1?'s':'' ?>
+            </td>
+          </tr>
+        </table>
+
+        <form method="post" action="bookings_new.php" style="margin-top:14px;display:flex;gap:10px">
+          <input type="hidden" name="confirm" value="1">
+          <input type="hidden" name="room_id" value="<?= (int)$room_id ?>">
           <input type="hidden" name="ci" value="<?= htmlspecialchars($ci) ?>">
           <input type="hidden" name="co" value="<?= htmlspecialchars($co) ?>">
           <input type="hidden" name="guests" value="<?= (int)$guests ?>">
-          <button class="btn primary" type="submit">Pay & Confirm</button>
-          <a class="btn" href="rooms_list.php" style="margin-left:8px">Cancel</a>
+          <button class="btn primary" type="submit">Confirm reservation</button>
+          <a class="btn" href="rooms_list.php?ci=<?= urlencode($ci) ?>&co=<?= urlencode($co) ?>&guests=<?= (int)$guests ?>">Cancel</a>
         </form>
+
+        <div class="muted tiny" style="margin-top:8px">
+          The specific room number will be assigned automatically after you confirm, based on availability.
+        </div>
       </div>
     </div>
   </div>
 </section>
-<?php require 'footer.php'; ?>
+<?php require_once __DIR__.'/footer.php'; ?>

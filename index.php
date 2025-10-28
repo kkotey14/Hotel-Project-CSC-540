@@ -1,11 +1,18 @@
-<?php require 'header.php'; require_once 'config.php'; ?>
+<?php
+// Load config first so HOTEL_NAME / HOTEL_TAGLINE / HOTEL_AMENITIES are defined
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/header.php';
+?>
 
 <section class="hero">
   <div class="container hero-wrap hero-card">
     <div style="padding:28px">
       <h1 class="h1"><?= htmlspecialchars(HOTEL_NAME) ?></h1>
       <p class="lead" style="margin-bottom:16px"><?= htmlspecialchars(HOTEL_TAGLINE) ?></p>
-      <p class="muted">Nestled along the river, where modern comfort meets coastal character. Newly redesigned rooms, curated details, and inviting spaces for private events and dining.</p>
+      <p class="muted">
+        Nestled along the river, where modern comfort meets coastal character.
+        Newly redesigned rooms, curated details, and inviting spaces for private events and dining.
+      </p>
       <div style="margin-top:18px">
         <a class="btn primary" href="rooms_list.php">Book Your Stay</a>
         <a class="btn" href="#amenities" style="margin-left:10px">Explore</a>
@@ -40,11 +47,13 @@
     <h2 class="h2" style="margin-bottom:10px">Amenities</h2>
     <p class="muted" style="margin-bottom:18px">Everything you need for a relaxed, comfortable stay.</p>
     <div class="grid">
-      <?php foreach($GLOBALS['HOTEL_AMENITIES'] as $a): ?>
+      <?php
+      $amen = $GLOBALS['HOTEL_AMENITIES'] ?? [];
+      foreach ($amen as $a): ?>
         <div class="span-4 amen-card">
-          <div class="amen-icon"><?= $a['icon'] ?></div>
-          <div class="h3"><?= htmlspecialchars($a['title']) ?></div>
-          <div class="muted"><?= htmlspecialchars($a['text']) ?></div>
+          <div class="amen-icon"><?= $a['icon'] ?? '•' ?></div>
+          <div class="h3"><?= htmlspecialchars($a['title'] ?? '') ?></div>
+          <div class="muted"><?= htmlspecialchars($a['text'] ?? '') ?></div>
         </div>
       <?php endforeach; ?>
     </div>
@@ -130,4 +139,4 @@
   </div>
 </section>
 
-<?php require 'footer.php'; ?>
+<?php require __DIR__ . '/footer.php'; ?>
